@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Devsign CLI — a thin formatter over src/engine/graft-core.mjs.
+// Devsigner CLI — a thin formatter over src/engine/graft-core.mjs.
 import * as graft from "../src/engine/graft-core.mjs";
 
 const C = {
@@ -33,7 +33,7 @@ async function main() {
       if (!name) die('usage: graft start <branch name>');
       const r = graft.start({ cwd, name });
       console.log(`${C.green("✓")} on new branch ${C.bold(r.branch)} (from ${r.base}).`);
-      if (r.zoneCreated) console.log(`  ${C.dim("· wrote .devsignrc.json (editable zone = front end)")}`);
+      if (r.zoneCreated) console.log(`  ${C.dim("· wrote .devsignerrc.json (editable zone = front end)")}`);
       console.log(`  ${C.dim("· installed pre-commit guard: commits outside the editable zone are blocked")}`);
       if (r.hooksBackedUp) console.log(`  ${C.yellow("· backed up your existing pre-commit hook → pre-commit.pre-graft")}`);
       break;

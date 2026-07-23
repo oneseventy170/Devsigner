@@ -49,6 +49,8 @@ html, body {
 ::-webkit-scrollbar-thumb { background: rgba(239, 235, 223, 0.10); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(239, 235, 223, 0.20); background-clip: padding-box; }
 ::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
 
 /* Titlebar (draggable, leaves room for macOS traffic lights) */
 .titlebar {
@@ -323,18 +325,17 @@ html, body {
 .ship-result a:hover { text-decoration: underline; }
 
 .zone-warn {
-  display: flex; align-items: flex-start; gap: 9px;
-  padding: 10px 13px;
+  display: flex; align-items: center; gap: 11px;
+  padding: 13px 15px;
   border: 1px solid color-mix(in srgb, var(--red) 35%, transparent);
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--red) 10%, transparent);
-  color: #ffd7d7;
-  font-size: 12px;
-  line-height: 1.5;
-  margin: 8px 0;
+  margin: 8px 0 12px;
 }
-.zone-ico { width: 18px; height: 18px; color: var(--red); flex: none; margin-top: 1px; }
-.zone-warn code { background: rgba(0,0,0,0.25); padding: 1px 5px; border-radius: 4px; font-family: ui-monospace, Menlo, monospace; }
+.zone-ico { width: 18px; height: 18px; color: #fff; flex: none; }
+.zone-title { font-size: 13px; font-weight: 600; color: #ffd7d7; letter-spacing: -0.01em; margin: 0 0 3px; }
+.zone-body { font-size: 12.5px; line-height: 1.55; color: rgba(255, 215, 215, 0.72); margin: 0; }
+.zone-warn code { background: rgba(0,0,0,0.25); padding: 1px 5px; border-radius: 4px; font-family: ui-monospace, Menlo, monospace; color: #ffd7d7; }
 
 /* ---- Two-pane workspace: activity list | detail ---- */
 .workspace {
@@ -399,13 +400,22 @@ html, body {
 
 .list-col { border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; background: var(--bg-sidebar); }
 .list-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 16px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 9px 12px 9px 16px; border-bottom: 1px solid var(--border);
   font-size: 13px; font-weight: 600; letter-spacing: -0.01em; color: var(--text);
 }
+.list-head-actions { display: flex; align-items: center; gap: 2px; flex: none; }
+.list-search {
+  flex: 1; min-width: 0;
+  background: var(--bg-elev); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  color: var(--text); font: inherit; font-size: 13px; font-weight: 400;
+  padding: 5px 10px; outline: none;
+}
+.list-search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.list-search::placeholder { color: var(--text-faint); }
 .icon-btn { -webkit-app-region: no-drag; background: none; border: none; color: var(--text-faint); cursor: pointer; font-size: 15px; width: 26px; height: 26px; border-radius: 5px; display: grid; place-items: center; transition: background 0.12s ease, color 0.12s ease; }
 .icon-btn:hover { color: var(--text); background: var(--bg-elev); }
-.rows { list-style: none; margin: 0; padding: 0 0 12px; overflow-y: auto; flex: 1; }
+.rows { list-style: none; margin: 0; padding: 0 0 12px; overflow-y: auto; overflow-x: hidden; flex: 1; }
 .row-item {
   display: flex; align-items: center; gap: 10px;
   padding: 7px 16px; cursor: pointer;
@@ -488,6 +498,9 @@ html, body {
   background: var(--accent-soft); border-radius: 14px;
 }
 .empty-illus .ico { width: 26px; height: 26px; }
+/* Repo-loading state */
+.loading-center { display: flex; flex-direction: column; align-items: center; gap: 14px; color: var(--text-dim); }
+.spinner.big { width: 22px; height: 22px; border-width: 2px; }
 /* Onboarding progress (Connect GitHub › Select repository › New branch) —
    pinned as a centered footer at the bottom of the pane */
 .onboard-steps {

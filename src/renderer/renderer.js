@@ -8,6 +8,7 @@ const state = {
   gh: { installed: false, authed: false, login: null },
   sync: { behind: 0, ahead: 0, upstream: null },
   skipSync: false, // set when the user dismisses the "pull first" onboarding step
+  query: "", searchOpen: false, // activity-list filter
   collapsed: new Set(["cancelled", "setaside"]), // collapsed group keys (secondary groups start closed)
 };
 let ghPoll = null;
@@ -39,6 +40,10 @@ const ICONS = {
   "pull": `<path d="M205.66,149.66l-72,72a8,8,0,0,1-11.32,0l-72-72a8,8,0,0,1,11.32-11.32L120,196.69V40a8,8,0,0,1,16,0V196.69l58.34-58.35a8,8,0,0,1,11.32,11.32Z"/>`,
 };
 function icon(name, cls = "") { return `<svg class="ico ${cls}" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true">${ICONS[name] || ""}</svg>`; }
+// Editable-zone callout: lighthouse icon + a title and body (body may contain HTML).
+function zoneCallout(title, body) {
+  return `<div class="zone-warn">${icon("lighthouse", "zone-ico")}<div><p class="zone-title">${title}</p><p class="zone-body">${body}</p></div></div>`;
+}
 function busy(btn, on, label) { if (!btn) return; if (on) { btn._label = btn.innerHTML; btn.innerHTML = `<span class="spinner"></span> ${label || ""}`.trim(); btn.disabled = true; } else { btn.innerHTML = btn._label ?? btn.innerHTML; btn.disabled = false; } }
 async function call(fn, ...args) { const res = await fn(...args); if (!res.ok) { toast(res.error); throw new Error(res.error); } return res.data; }
 function ago(iso) { if (!iso) return ""; const d = (Date.now() - new Date(iso).getTime()) / 1000; if (d < 60) return "just now"; if (d < 3600) return `${Math.floor(d / 60)}m ago`; if (d < 86400) return `${Math.floor(d / 3600)}h ago`; if (d < 2592000) return `${Math.floor(d / 86400)}d ago`; return new Date(iso).toLocaleDateString(); }
@@ -262,43 +267,52 @@ function section(key, label, count, color, bodyHTML) {
 function renderList() {
   const ul = $("rows");
   if (!state.ctx || !state.ctx.isRepo) { ul.innerHTML = `<li class="list-empty">Open a repository to see its activity.</li>`; return; }
+  const q = (state.query || "").trim().toLowerCase();
+  const m = (s) => !q || String(s).toLowerCase().includes(q);
+  const prMatch = (p) => m(p.title) || m(p.headRefName) || m("#" + p.number);
   const prs = state.prsAvailable ? state.prs : [];
-  const open = prs.filter((p) => p.state === "OPEN");
-  const merged = prs.filter((p) => p.state === "MERGED");
-  const closed = prs.filter((p) => p.state === "CLOSED");
   // A branch is "shipped" once it has an open or merged PR — then it shows up as
   // that PR, not as a separate in-progress branch.
   const shipped = new Set(prs.filter((p) => p.state !== "CLOSED").map((p) => p.headRefName));
-  const inProgress = state.branches.filter((b) => !b.isDefault && !shipped.has(b.name));
+  const open = prs.filter((p) => p.state === "OPEN" && prMatch(p));
+  const merged = prs.filter((p) => p.state === "MERGED" && prMatch(p));
+  const closed = prs.filter((p) => p.state === "CLOSED" && prMatch(p));
+  const inProgress = state.branches.filter((b) => !b.isDefault && !shipped.has(b.name) && (m(b.name) || m(prettyBranch(b.name))));
+  const stashes = state.stashes.filter((s) => m(s.label));
+  const showWorking = isDirty() && m(`working tree uncommitted changes ${state.ctx.branch}`);
+
+  // When searching, drop groups that have no matches; otherwise keep them (with
+  // their empty-state placeholder) so the list structure stays stable.
+  const sect = (key, label, color, items, rowFn, emptyText) => {
+    if (q && !items.length) return "";
+    return section(key, label, items.length, color, items.length ? items.map(rowFn).join("") : `<li class="list-empty sub">${emptyText}</li>`);
+  };
 
   let html = "";
-  // Pinned Working tree row — uncommitted changes are always reachable here (to
-  // commit or set aside), whatever branch or PR state you're in.
-  if (isDirty()) {
+  // Pinned Working tree row — uncommitted changes are always reachable here.
+  if (showWorking) {
     html += rowHTML({ cls: "working", type: "working", iconName: "pencil", col: "var(--amber)",
       title: "Working tree", sub: `${state.working.length} uncommitted change${state.working.length > 1 ? "s" : ""} · on ${state.ctx.branch}` });
   }
-  html += section("inprogress", "In progress", inProgress.length, "var(--blue)",
-    inProgress.length
-      ? inProgress.map((b) => rowHTML({ cls: "branch", type: "branch", id: b.name, iconName: "branch", col: "var(--blue)",
-          title: prettyBranch(b.name), sub: `${b.name}${b.date ? ` · ${ago(b.date)}` : ""}`, tag: b.current ? "current" : "" })).join("")
-      : `<li class="list-empty sub">Nothing in progress — start a new branch.</li>`);
+  html += sect("inprogress", "In progress", "var(--blue)", inProgress,
+    (b) => rowHTML({ cls: "branch", type: "branch", id: b.name, iconName: "branch", col: "var(--blue)",
+      title: prettyBranch(b.name), sub: `${b.name}${b.date ? ` · ${ago(b.date)}` : ""}`, tag: b.current ? "current" : "" }),
+    "Nothing in progress — start a new branch.");
   if (!state.prsAvailable) {
-    html += state.gh && state.gh.authed
+    if (!q) html += state.gh && state.gh.authed
       ? `<li class="list-empty sub">No GitHub remote found for this repo.</li>`
       : `<li class="list-empty sub"><button class="linklike" data-connect>Connect GitHub</button> to track pull requests.</li>`;
   } else {
-    html += section("inreview", "In review", open.length, "var(--green)",
-      open.length ? open.map(prRow).join("") : `<li class="list-empty sub">Nothing in review.</li>`);
-    html += section("done", "Done", merged.length, "var(--purple)",
-      merged.length ? merged.map(prRow).join("") : `<li class="list-empty sub">Nothing merged yet.</li>`);
+    html += sect("inreview", "In review", "var(--green)", open, prRow, "Nothing in review.");
+    html += sect("done", "Done", "var(--purple)", merged, prRow, "Nothing merged yet.");
     if (closed.length) html += section("cancelled", "Cancelled", closed.length, "var(--red)", closed.map(prRow).join(""));
   }
-  if (state.stashes.length) {
-    html += section("setaside", "Set aside", state.stashes.length, "var(--mute)",
-      state.stashes.map((s) => rowHTML({ cls: "stash", type: "stash", id: s.index, iconName: "archive", col: "var(--mute)",
+  if (stashes.length) {
+    html += section("setaside", "Set aside", stashes.length, "var(--mute)",
+      stashes.map((s) => rowHTML({ cls: "stash", type: "stash", id: s.index, iconName: "archive", col: "var(--mute)",
         title: s.label, sub: `stash@{${s.index}}` })).join(""));
   }
+  if (q && !html.trim()) html = `<li class="list-empty">No matches for “${esc(state.query.trim())}”.</li>`;
   ul.innerHTML = html;
   ul.querySelectorAll(".group-head").forEach((h) => h.addEventListener("click", () => {
     const k = h.dataset.group;
@@ -369,8 +383,8 @@ function renderConnectStep(es, g) {
     <div class="empty-illus">${icon("pull-request")}</div>
     <h2>${inst ? "Connect your GitHub account" : "Install the GitHub CLI"}</h2>
     <p class="empty-msg">${inst
-      ? "Sign in once so Devsign can open pull requests for you. Devsign stores nothing — your GitHub CLI handles the sign-in."
-      : "Devsign uses the GitHub CLI (gh) to open pull requests. Install it from cli.github.com, then connect."}</p>
+      ? "Sign in once so Devsigner can open pull requests for you. Devsigner stores nothing — your GitHub CLI handles the sign-in."
+      : "Devsigner uses the GitHub CLI (gh) to open pull requests. Install it from cli.github.com, then connect."}</p>
     <button class="btn signal" id="ob-gh">${inst ? "Connect GitHub" : "Get the GitHub CLI"}</button>
     ${onboardProgress(0)}`;
   es.querySelector("#ob-gh").addEventListener("click", () => inst ? connectGh() : window.graft.openExternal("https://cli.github.com"));
@@ -406,7 +420,7 @@ function renderCreateStep(es) {
   es.innerHTML = `
     <div class="empty-illus">${icon("branch")}</div>
     <h2>Start a new branch</h2>
-    <p class="empty-msg">Describe what you're changing — Devsign branches off the latest ${esc(state.ctx.defaultBranch)} so you get a safe copy to work in.</p>
+    <p class="empty-msg">Describe what you're changing — Devsigner branches off the latest ${esc(state.ctx.defaultBranch)} so you get a safe copy to work in.</p>
     <div class="create-row">
       <input id="create-name" class="input" type="text" placeholder="e.g. update the pricing page" autocomplete="off" ${dirty ? "disabled" : ""} />
       <button class="btn signal" id="create-start" ${dirty ? "disabled" : ""}>Create branch</button>
@@ -438,6 +452,14 @@ async function startBranch(name) {
   } catch {}
 }
 function goHome() { state.selected = null; renderList(); renderTopnav(); showEmpty(); }
+// Immediate feedback while a repo loads (context + branches + PRs + fetch can take a moment).
+function showLoading(msg) {
+  $("rows").innerHTML = `<li class="list-empty"><span class="spinner"></span> ${esc(msg)}</li>`;
+  $("detail-view").classList.add("hidden");
+  $("detail-col").classList.remove("flush");
+  const es = $("empty-state"); es.classList.remove("hidden");
+  es.innerHTML = `<div class="loading-center"><span class="spinner big"></span><p class="empty-msg">${esc(msg)}</p></div>`;
+}
 
 // "Open in <agent>" buttons for making edits, if a supported agent is installed.
 function agentButtonsHTML() {
@@ -480,7 +502,9 @@ function renderBranchView(name, log, st) {
 
   const unsaved = dirty ? `
     <div class="detail-section-h">Unsaved changes (${state.working.length})</div>
-    ${restricted ? `<div class="zone-warn">${icon("lighthouse", "zone-ico")}<span>${restricted} file(s) are outside the editable zone — a developer should handle those.</span></div>` : ""}
+    ${restricted ? zoneCallout(
+      "Outside the editable zone",
+      `${restricted} of these ${restricted > 1 ? "files sit" : "file sits"} outside the editable zone, so ${restricted > 1 ? "they're" : "it's"} excluded from what you can commit. A developer should handle ${restricted > 1 ? "those" : "that"}.`) : ""}
     <ul class="files">${state.working.map(fileLi).join("")}</ul>` : "";
 
   const saves = commits.length
@@ -546,7 +570,7 @@ async function createPR() {
   if (!(state.gh && state.gh.authed)) {
     // Not connected — turn the modal into a connect prompt.
     const inst = !!(state.gh && state.gh.installed);
-    preview.innerHTML = `<div class="connect-panel">${icon("pull-request", "cp-ico")}<div><div class="cp-title">${inst ? "Connect GitHub to open a pull request" : "GitHub CLI not found"}</div><p class="muted">${inst ? "Sign in once and Devsign can push your branch and open the PR for you. Devsign stores nothing — your GitHub CLI handles the sign-in." : "Install the GitHub CLI (gh) from cli.github.com, then connect your account here."}</p></div></div>`;
+    preview.innerHTML = `<div class="connect-panel">${icon("pull-request", "cp-ico")}<div><div class="cp-title">${inst ? "Connect GitHub to open a pull request" : "GitHub CLI not found"}</div><p class="muted">${inst ? "Sign in once and Devsigner can push your branch and open the PR for you. Devsigner stores nothing — your GitHub CLI handles the sign-in." : "Install the GitHub CLI (gh) from cli.github.com, then connect your account here."}</p></div></div>`;
     confirm.textContent = inst ? "Connect GitHub" : "Get the GitHub CLI";
     confirm.disabled = false;
     onConfirm = () => { close(); connectGh(); };
@@ -559,7 +583,10 @@ async function createPR() {
       const r = await call(window.graft.ship, { cwd: state.cwd, dryRun: true });
       annotation = r.annotation;
       const blocked = !!(r.restricted && r.restricted.length);
-      const warn = blocked ? `<div class="zone-warn">${icon("lighthouse", "zone-ico")}<span>${r.restricted.length} file(s) are outside the editable zone. A developer needs to handle: ${r.restricted.map((f) => `<code>${esc(f)}</code>`).join(" ")}</span></div>` : "";
+      const n = r.restricted ? r.restricted.length : 0;
+      const warn = blocked ? zoneCallout(
+        "Can't open this PR yet",
+        `${n} file${n > 1 ? "s" : ""} ${n > 1 ? "are" : "is"} outside the editable zone and ${n > 1 ? "need" : "needs"} a developer: ${r.restricted.map((f) => `<code>${esc(f)}</code>`).join(" ")}`) : "";
       preview.innerHTML = `${warn}<div class="preview-head"><span class="badge dim">${esc(r.annotation.source)}</span><span class="preview-title">${esc(r.annotation.title)}</span></div><div class="preview-body">${renderMarkdown(r.annotation.body)}</div>`;
       confirm.disabled = blocked;
     } catch { preview.innerHTML = `<div class="muted">Couldn't analyze the changes on this branch.</div>`; }
@@ -638,6 +665,7 @@ async function reloadRepoState() {
 function startNewChange() { if (state.ctx && state.ctx.isRepo) goHome(); }
 async function loadContext(cwd) {
   state.cwd = cwd; state.selected = null; state.skipSync = false;
+  showLoading(`Opening ${cwd.split("/").pop()}…`);
   state.ctx = await call(window.graft.context, cwd);
   // On open, fetch once so the "pull first" gate reflects the real remote.
   await Promise.all([loadPRs().catch(() => {}), loadStashes().catch(() => {}), loadWorking().catch(() => {}), loadBranches().catch(() => {}), loadGh().catch(() => {}), loadSync(true).catch(() => {})]);
@@ -654,6 +682,18 @@ async function refreshView() {
   if (s && s.type === "branch") selectBranch(s.branch);
 }
 $("list-refresh").addEventListener("click", () => { if (state.cwd) refreshView(); });
+// Activity search: toggle a filter input in the list header.
+function toggleSearch(force) {
+  state.searchOpen = force !== undefined ? force : !state.searchOpen;
+  const inp = $("list-search"), title = $("list-title");
+  inp.classList.toggle("hidden", !state.searchOpen);
+  title.classList.toggle("hidden", state.searchOpen);
+  if (state.searchOpen) { inp.focus(); inp.select(); }
+  else if (state.query) { state.query = ""; inp.value = ""; renderList(); }
+}
+$("list-search-btn").addEventListener("click", () => toggleSearch());
+$("list-search").addEventListener("input", (e) => { state.query = e.target.value; renderList(); });
+$("list-search").addEventListener("keydown", (e) => { if (e.key === "Escape") toggleSearch(false); });
 $("fetch-btn").addEventListener("click", async () => {
   if (!state.cwd) return;
   const b = $("fetch-btn"); busy(b, true, "Fetching");

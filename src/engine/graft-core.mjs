@@ -1,4 +1,4 @@
-// Devsign engine — pure logic, no console output, no process.exit.
+// Devsigner engine — pure logic, no console output, no process.exit.
 // Every function takes an options object (always including `cwd`, the repo to
 // operate on) and RETURNS structured data or throws an Error. Both the CLI and
 // the Electron app consume this module.
@@ -248,7 +248,7 @@ export const DEFAULT_RESTRICTED = [
 
 function loadConfig(cwd) {
   const root = gitMust(cwd, "rev-parse", "--show-toplevel");
-  const path = join(root, ".devsignrc.json");
+  const path = join(root, ".devsignerrc.json");
   let editable = DEFAULT_EDITABLE;
   let restricted = DEFAULT_RESTRICTED;
   if (existsSync(path)) {
@@ -275,9 +275,9 @@ function globToRegex(glob) {
 
 const matchesAny = (file, globs) => globs.some((g) => globToRegex(g).test(file));
 
-// Restricted = outside the editable zone. Devsign's own config is always allowed.
+// Restricted = outside the editable zone. Devsigner's own config is always allowed.
 function isRestricted(file, cfg) {
-  if (file === ".devsignrc.json") return false;
+  if (file === ".devsignerrc.json") return false;
   return !(matchesAny(file, cfg.editablePaths) && !matchesAny(file, cfg.restrictedPaths));
 }
 
@@ -397,16 +397,16 @@ export function slugify(name) {
 
 // --- editable-zone setup (runs on `start`) ---------------------------------
 
-const GUARD_MARK = "devsign-editable-zone-guard";
+const GUARD_MARK = "devsigner-editable-zone-guard";
 
-// Write a .devsignrc.json designating the editable zone, if one doesn't exist.
+// Write a .devsignerrc.json designating the editable zone, if one doesn't exist.
 export function ensureZoneConfig(cwd) {
   const root = gitMust(cwd, "rev-parse", "--show-toplevel");
-  const path = join(root, ".devsignrc.json");
+  const path = join(root, ".devsignerrc.json");
   if (existsSync(path)) return { created: false, path };
   const cfg = {
     _comment:
-      "Devsign editable zone. A designer may freely edit and create files matching editablePaths (the front end). restrictedPaths always wins (backend, auth, routing, DB, config). Commits touching restricted files are blocked by Devsign's pre-commit hook. Tune these globs for your repo.",
+      "Devsigner editable zone. A designer may freely edit and create files matching editablePaths (the front end). restrictedPaths always wins (backend, auth, routing, DB, config). Commits touching restricted files are blocked by Devsigner's pre-commit hook. Tune these globs for your repo.",
     editablePaths: DEFAULT_EDITABLE,
     restrictedPaths: DEFAULT_RESTRICTED,
   };
@@ -421,11 +421,11 @@ function hooksDir(cwd) {
 }
 
 // The zone checker — a self-contained ESM script dropped in .git/hooks. It reads
-// .devsignrc.json (or the baked-in defaults) and blocks commits that stage files
+// .devsignerrc.json (or the baked-in defaults) and blocks commits that stage files
 // outside the editable zone. Kept dependency-free so it works wherever git runs.
 function zoneCheckSource() {
   return `#!/usr/bin/env node
-// ${GUARD_MARK} — managed by Devsign. Blocks commits outside the editable zone.
+// ${GUARD_MARK} — managed by Devsigner. Blocks commits outside the editable zone.
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -433,7 +433,7 @@ import { join } from "node:path";
 const root = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).stdout.trim();
 let editable = ${JSON.stringify(DEFAULT_EDITABLE)};
 let restricted = ${JSON.stringify(DEFAULT_RESTRICTED)};
-const cfgPath = join(root, ".devsignrc.json");
+const cfgPath = join(root, ".devsignerrc.json");
 if (existsSync(cfgPath)) {
   try {
     const c = JSON.parse(readFileSync(cfgPath, "utf8"));
@@ -444,13 +444,13 @@ if (existsSync(cfgPath)) {
 }
 const g2r = (g) => new RegExp("^" + g.replace(/[.+^\${}()|[\\]\\\\]/g, "\\\\$&").replace(/\\*\\*/g, "\\0").replace(/\\*/g, "[^/]*").replace(/\\0/g, ".*") + "$");
 const any = (f, gs) => gs.some((x) => g2r(x).test(f));
-const restrictedFile = (f) => f !== ".devsignrc.json" && !(any(f, editable) && !any(f, restricted));
+const restrictedFile = (f) => f !== ".devsignerrc.json" && !(any(f, editable) && !any(f, restricted));
 const staged = spawnSync("git", ["diff", "--cached", "--name-only"], { encoding: "utf8" }).stdout.split("\\n").filter(Boolean);
 const bad = staged.filter(restrictedFile);
 if (bad.length) {
-  process.stderr.write("\\n\\x1b[31m\\u2717 Devsign: commit blocked \\u2014 these files are outside the editable zone (front end):\\x1b[0m\\n");
+  process.stderr.write("\\n\\x1b[31m\\u2717 Devsigner: commit blocked \\u2014 these files are outside the editable zone (front end):\\x1b[0m\\n");
   for (const f of bad) process.stderr.write("    " + f + "\\n");
-  process.stderr.write("\\nBackend, auth, routing, DB, and config are protected. A developer should make\\nthese changes. To adjust the zone, edit .devsignrc.json.\\nTo bypass once (not recommended): git commit --no-verify\\n\\n");
+  process.stderr.write("\\nBackend, auth, routing, DB, and config are protected. A developer should make\\nthese changes. To adjust the zone, edit .devsignerrc.json.\\nTo bypass once (not recommended): git commit --no-verify\\n\\n");
   process.exit(1);
 }
 `;
@@ -458,17 +458,17 @@ if (bad.length) {
 
 function preCommitWrapper() {
   return `#!/bin/sh
-# ${GUARD_MARK} — managed by Devsign
+# ${GUARD_MARK} — managed by Devsigner
 HOOKDIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 if ! command -v node >/dev/null 2>&1; then
   echo "graft: node not found on PATH; skipping editable-zone check" >&2
   exit 0
 fi
-exec node "$HOOKDIR/devsign-zone-check.mjs"
+exec node "$HOOKDIR/devsigner-zone-check.mjs"
 `;
 }
 
-// Install the pre-commit guard (idempotent). Backs up a pre-existing, non-Devsign
+// Install the pre-commit guard (idempotent). Backs up a pre-existing, non-Devsigner
 // pre-commit hook to pre-commit.pre-graft so we never silently clobber one.
 export function installZoneGuard(cwd) {
   const dir = hooksDir(cwd);
@@ -481,8 +481,8 @@ export function installZoneGuard(cwd) {
       backedUp = true;
     }
   }
-  writeFileSync(join(dir, "devsign-zone-check.mjs"), zoneCheckSource());
-  chmodSync(join(dir, "devsign-zone-check.mjs"), 0o755);
+  writeFileSync(join(dir, "devsigner-zone-check.mjs"), zoneCheckSource());
+  chmodSync(join(dir, "devsigner-zone-check.mjs"), 0o755);
   writeFileSync(pre, preCommitWrapper());
   chmodSync(pre, 0o755);
   return { hooksDir: dir, backedUp };
@@ -564,7 +564,7 @@ ${why.join("\n")}
 ${flags.join("\n")}
 
 ---
-_Generated by Devsign. Editable-zone files: ${editable.length} · sensitive files: ${sensitive.length}._`;
+_Generated by Devsigner. Editable-zone files: ${editable.length} · sensitive files: ${sensitive.length}._`;
 
   return { title: titleFromBranch(branch), body, source: "deterministic" };
 }
@@ -572,7 +572,7 @@ _Generated by Devsign. Editable-zone files: ${editable.length} · sensitive file
 async function enrichWithLLM({ branch, files, signal, diff, anthropicKey, model }) {
   if (!anthropicKey) return null;
   const useModel = model || "claude-sonnet-5";
-  const prompt = `You are writing a GitHub PR description for a change made by a designer using a tool called Devsign.
+  const prompt = `You are writing a GitHub PR description for a change made by a designer using a tool called Devsigner.
 The audience is a developer who needs to review quickly and trust the change.
 
 Branch: ${branch}
@@ -602,7 +602,7 @@ and "## Flag for review" (risky or assumption-based items, especially sensitive-
     const text = data?.content?.[0]?.text ?? "";
     const json = JSON.parse(text.replace(/^```json\s*|\s*```$/g, ""));
     if (json.title && json.body) {
-      return { title: json.title, body: `${json.body}\n\n---\n_Generated by Devsign (Claude ${useModel})._`, source: `claude:${useModel}` };
+      return { title: json.title, body: `${json.body}\n\n---\n_Generated by Devsigner (Claude ${useModel})._`, source: `claude:${useModel}` };
     }
   } catch {
     return null;
@@ -625,7 +625,7 @@ export async function plan({ cwd, anthropicKey, model } = {}) {
 // ---------------------------------------------------------------------------
 
 function createPrViaGh({ cwd, title, body, base, head, token }) {
-  const dir = mkdtempSync(join(tmpdir(), "devsign-"));
+  const dir = mkdtempSync(join(tmpdir(), "devsigner-"));
   const bodyFile = join(dir, "body.md");
   writeFileSync(bodyFile, body, "utf8");
   const env = token ? { GH_TOKEN: token } : undefined;
@@ -644,7 +644,7 @@ async function createPrViaRest({ cwd, title, body, base, head, token }) {
       authorization: `Bearer ${token}`,
       accept: "application/vnd.github+json",
       "content-type": "application/json",
-      "user-agent": "devsign-app",
+      "user-agent": "devsigner-app",
     },
     body: JSON.stringify({ title, body, base, head }),
   });
@@ -685,7 +685,7 @@ export async function ship({ cwd, dryRun = false, title, anthropicKey, model, gi
   let committed = false;
   if (gitFor(cwd)("diff", "--cached", "--quiet").code !== 0) {
     const msg = [finalTitle, "", ...p.files.map((f) => `- ${f.status}: ${f.file}`)].join("\n");
-    const dir = mkdtempSync(join(tmpdir(), "devsign-"));
+    const dir = mkdtempSync(join(tmpdir(), "devsigner-"));
     const msgFile = join(dir, "msg.txt");
     writeFileSync(msgFile, msg, "utf8");
     gitMust(cwd, "commit", "-F", msgFile);
@@ -719,7 +719,7 @@ export function commit({ cwd, message }) {
     throw new Error(`can't commit — ${restricted.length} file(s) outside the editable zone:\n${restricted.map((f) => `  ${f}`).join("\n")}`);
   }
   gitMust(cwd, "add", "-A");
-  const dir = mkdtempSync(join(tmpdir(), "devsign-"));
+  const dir = mkdtempSync(join(tmpdir(), "devsigner-"));
   const msgFile = join(dir, "msg.txt");
   writeFileSync(msgFile, (message && message.trim()) || "Update", "utf8");
   gitMust(cwd, "commit", "-F", msgFile);

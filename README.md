@@ -1,10 +1,10 @@
-# Devsign
+# Devsigner
 
 A simplified git + GitHub workflow for designers. Make front-end changes on a
 safe branch and open a reviewable pull request — without touching the terminal —
 with an AI-assisted PR description so developers can review quickly.
 
-Devsign is a local macOS desktop app. It has **no accounts and no backend**: it
+Devsigner is a local macOS desktop app. It has **no accounts and no backend**: it
 drives your own `git` and the GitHub CLI (`gh`) on your machine and stores
 nothing of its own.
 
@@ -12,11 +12,11 @@ nothing of its own.
 
 1. **Connect GitHub** — a one-time `gh` sign-in, guided in-app.
 2. **Select a repository** — any local git repo.
-3. **New branch** — describe your change in plain language; Devsign branches off
+3. **New branch** — describe your change in plain language; Devsigner branches off
    the latest default branch so you get a safe copy to work in.
 4. **Edit** — open the repo in Cursor or Claude Code and make your changes.
 5. **Save** — commit ("saves") and stash from the branch view.
-6. **Create PR** — Devsign pushes and opens a pull request with a generated
+6. **Create PR** — Devsigner pushes and opens a pull request with a generated
    description of what changed, which components/tokens were reused, and what to
    review.
 
@@ -40,8 +40,8 @@ npm start        # run the app from source
 ## Build
 
 ```bash
-npm run pack     # unpacked app  ->  dist/mac-arm64/Devsign.app
-npm run dist     # installable   ->  dist/Devsign-<version>-arm64.dmg
+npm run pack     # unpacked app  ->  dist/mac-arm64/Devsigner.app
+npm run dist     # installable   ->  dist/Devsigner-<version>-arm64.dmg
 ```
 
 The DMG is currently **unsigned** (`build.mac.identity: null`) — fine locally,
@@ -50,15 +50,15 @@ an Apple Developer ID. See [Distribution](#distribution-signing).
 
 ## GitHub connection
 
-Devsign uses the `gh` CLI for pull requests and never handles your credentials —
+Devsigner uses the `gh` CLI for pull requests and never handles your credentials —
 `gh` and the browser do the sign-in. Connect, switch accounts, or re-check from
 the account chip at the top-right of the app.
 
 ## AI-assisted descriptions
 
-PR descriptions are **deterministic by default** — Devsign parses the diff for
+PR descriptions are **deterministic by default** — Devsigner parses the diff for
 reused components, design tokens, and assumption markers. If `ANTHROPIC_API_KEY`
-is set in the environment, the prose is written by Claude (`DEVSIGN_MODEL`
+is set in the environment, the prose is written by Claude (`DEVSIGNER_MODEL`
 overrides the model; default `claude-sonnet-5`). LLM failures fall back to the
 deterministic text, so creating a PR is never blocked.
 
@@ -68,8 +68,8 @@ deterministic text, so creating a PR is never blocked.
 
 ## Editable zone
 
-Devsign protects backend/infra from accidental edits. The first time you start a
-branch in a repo it writes a `.devsignrc.json` and installs a pre-commit guard
+Devsigner protects backend/infra from accidental edits. The first time you start a
+branch in a repo it writes a `.devsignerrc.json` and installs a pre-commit guard
 that blocks commits touching files outside the editable zone (the front end).
 Tune the globs per repo:
 
@@ -86,7 +86,7 @@ committed; `restrictedPaths` always wins.
 ## Architecture
 
 The engine in `src/engine` is UI-agnostic and drives both the CLI
-(`bin/devsign.mjs`) and the Electron app (`src/main`, `src/renderer`). No
+(`bin/devsigner.mjs`) and the Electron app (`src/main`, `src/renderer`). No
 bundler and no framework — plain ES modules with a small, sandboxed preload
 bridge; the renderer never touches Node directly.
 

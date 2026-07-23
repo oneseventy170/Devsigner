@@ -1,11 +1,11 @@
 {
-  "name": "devsign",
+  "name": "devsigner",
   "version": "0.1.0",
   "description": "A simplified git/GitHub workflow for designers, with an AI-generated annotation layer.",
   "type": "module",
   "main": "src/main/main.js",
   "bin": {
-    "devsign": "bin/devsign.mjs"
+    "devsigner": "bin/devsigner.mjs"
   },
   "scripts": {
     "start": "electron .",
@@ -16,19 +16,19 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/oneseventy170/Devsign.git"
+    "url": "git+https://github.com/oneseventy170/Devsigner.git"
   },
-  "homepage": "https://github.com/oneseventy170/Devsign#readme",
+  "homepage": "https://github.com/oneseventy170/Devsigner#readme",
   "bugs": {
-    "url": "https://github.com/oneseventy170/Devsign/issues"
+    "url": "https://github.com/oneseventy170/Devsigner/issues"
   },
   "devDependencies": {
     "electron": "^43.1.1",
     "electron-builder": "^26.15.3"
   },
   "build": {
-    "appId": "com.devsign.app",
-    "productName": "Devsign",
+    "appId": "com.devsigner.app",
+    "productName": "Devsigner",
     "files": [
       "src/**/*",
       "bin/**/*",

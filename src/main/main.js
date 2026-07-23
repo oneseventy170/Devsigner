@@ -1,4 +1,4 @@
-// Devsign — Electron main process (ESM).
+// Devsigner — Electron main process (ESM).
 // Owns the engine and the OS-level capabilities (file dialog, shell). The
 // renderer never touches Node directly; it calls these handlers over IPC.
 
@@ -80,7 +80,7 @@ function openIn({ app: which, cwd }) {
 }
 
 // Open the user's Terminal running `gh auth login` (browser flow). The sign-in
-// happens entirely in gh / the browser — Devsign never touches the credentials.
+// happens entirely in gh / the browser — Devsigner never touches the credentials.
 function ghTerminal(cmd) {
   const osa = `tell application "Terminal"\n  do script "${cmd}"\n  activate\nend tell`;
   spawn("osascript", ["-e", osa], { detached: true, stdio: "ignore" }).unref();
@@ -116,7 +116,7 @@ app.whenReady().then(() => {
   handle("graft:status", (cwd) => graft.status({ cwd }));
 
   handle("graft:plan", ({ cwd }) =>
-    graft.plan({ cwd, anthropicKey: process.env.ANTHROPIC_API_KEY, model: process.env.DEVSIGN_MODEL }));
+    graft.plan({ cwd, anthropicKey: process.env.ANTHROPIC_API_KEY, model: process.env.DEVSIGNER_MODEL }));
 
   handle("graft:ship", ({ cwd, dryRun, title, account }) => {
     const { token } = resolveAccount(account);
@@ -126,7 +126,7 @@ app.whenReady().then(() => {
       title,
       githubToken: token,
       anthropicKey: process.env.ANTHROPIC_API_KEY,
-      model: process.env.DEVSIGN_MODEL,
+      model: process.env.DEVSIGNER_MODEL,
     });
   });
 
