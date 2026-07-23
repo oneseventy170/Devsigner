@@ -1,0 +1,671 @@
+// Renderer — talks to the engine only through window.graft (preload bridge).
+
+const $ = (id) => document.getElementById(id);
+const state = {
+  cwd: null, ctx: null, agents: { cursor: false, claude: false },
+  selected: null, // null = empty; else {type:'branch'|'pr'|'stash', ...}
+  prs: [], prsAvailable: true, stashes: [], working: [], branches: [],
+  gh: { installed: false, authed: false, login: null },
+  sync: { behind: 0, ahead: 0, upstream: null },
+  skipSync: false, // set when the user dismisses the "pull first" onboarding step
+  collapsed: new Set(["cancelled", "setaside"]), // collapsed group keys (secondary groups start closed)
+};
+let ghPoll = null;
+const isDirty = () => state.working.length > 0;
+
+// --- helpers ----------------------------------------------------------------
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.remove("hidden"); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.add("hidden"), 5000); }
+function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+
+// --- icons (Phosphor, regular weight — inlined so nothing loads over the wire) ---
+const ICONS = {
+  "pull-request": `<path d="M104,64A32,32,0,1,0,64,95v66a32,32,0,1,0,16,0V95A32.06,32.06,0,0,0,104,64ZM56,64A16,16,0,1,1,72,80,16,16,0,0,1,56,64ZM88,192a16,16,0,1,1-16-16A16,16,0,0,1,88,192Zm120-31V110.63a23.85,23.85,0,0,0-7-17L163.31,56H192a8,8,0,0,0,0-16H144a8,8,0,0,0-8,8V96a8,8,0,0,0,16,0V67.31L189.66,105a8,8,0,0,1,2.34,5.66V161a32,32,0,1,0,16,0Zm-8,47a16,16,0,1,1,16-16A16,16,0,0,1,200,208Z"/>`,
+  "merge": `<path d="M208,112a32.05,32.05,0,0,0-30.69,23l-42.21-6a8,8,0,0,1-4.95-2.71L94.43,84.55A32,32,0,1,0,72,87v82a32,32,0,1,0,16,0V101.63l30,35a24,24,0,0,0,14.83,8.14l44,6.28A32,32,0,1,0,208,112ZM64,56A16,16,0,1,1,80,72,16,16,0,0,1,64,56ZM96,200a16,16,0,1,1-16-16A16,16,0,0,1,96,200Zm112-40a16,16,0,1,1,16-16A16,16,0,0,1,208,160Z"/>`,
+  "branch": `<path d="M232,64a32,32,0,1,0-40,31v17a8,8,0,0,1-8,8H96a23.84,23.84,0,0,0-8,1.38V95a32,32,0,1,0-16,0v66a32,32,0,1,0,16,0V144a8,8,0,0,1,8-8h88a24,24,0,0,0,24-24V95A32.06,32.06,0,0,0,232,64ZM64,64A16,16,0,1,1,80,80,16,16,0,0,1,64,64ZM96,192a16,16,0,1,1-16-16A16,16,0,0,1,96,192ZM200,80a16,16,0,1,1,16-16A16,16,0,0,1,200,80Z"/>`,
+  "circle-dashed": `<path d="M96.26,37.05A8,8,0,0,1,102,27.29a104.11,104.11,0,0,1,52,0,8,8,0,0,1-2,15.75,8.15,8.15,0,0,1-2-.26,88.09,88.09,0,0,0-44,0A8,8,0,0,1,96.26,37.05ZM53.79,55.14a104.05,104.05,0,0,0-26,45,8,8,0,0,0,15.42,4.27,88,88,0,0,1,22-38.09A8,8,0,0,0,53.79,55.14ZM43.21,151.55a8,8,0,1,0-15.42,4.28,104.12,104.12,0,0,0,26,45,8,8,0,0,0,11.41-11.22A88.14,88.14,0,0,1,43.21,151.55ZM150,213.22a88,88,0,0,1-44,0,8,8,0,1,0-4,15.49,104.11,104.11,0,0,0,52,0,8,8,0,0,0-4-15.49ZM222.65,146a8,8,0,0,0-9.85,5.58,87.91,87.91,0,0,1-22,38.08,8,8,0,1,0,11.42,11.21,104,104,0,0,0,26-45A8,8,0,0,0,222.65,146Zm-9.86-41.54a8,8,0,0,0,15.42-4.28,104,104,0,0,0-26-45,8,8,0,1,0-11.41,11.22A88,88,0,0,1,212.79,104.45Z"/>`,
+  "x-circle": `<path d="M165.66,101.66,139.31,128l26.35,26.34a8,8,0,0,1-11.32,11.32L128,139.31l-26.34,26.35a8,8,0,0,1-11.32-11.32L116.69,128,90.34,101.66a8,8,0,0,1,11.32-11.32L128,116.69l26.34-26.35a8,8,0,0,1,11.32,11.32ZM232,128A104,104,0,1,1,128,24,104.11,104.11,0,0,1,232,128Zm-16,0a88,88,0,1,0-88,88A88.1,88.1,0,0,0,216,128Z"/>`,
+  "pencil": `<path d="M227.31,73.37,182.63,28.68a16,16,0,0,0-22.63,0L36.69,152A15.86,15.86,0,0,0,32,163.31V208a16,16,0,0,0,16,16H92.69A15.86,15.86,0,0,0,104,219.31L227.31,96a16,16,0,0,0,0-22.63ZM92.69,208H48V163.31l88-88L180.69,120ZM192,108.68,147.31,64l24-24L216,84.68Z"/>`,
+  "refresh": `<path d="M224,48V96a8,8,0,0,1-8,8H168a8,8,0,0,1,0-16h28.69L182.06,73.37a79.56,79.56,0,0,0-56.13-23.43h-.45A79.52,79.52,0,0,0,69.59,72.71,8,8,0,0,1,58.41,61.27a96,96,0,0,1,135,.79L208,76.69V48a8,8,0,0,1,16,0ZM186.41,183.29a80,80,0,0,1-112.47-.66L59.31,168H88a8,8,0,0,0,0-16H40a8,8,0,0,0-8,8v48a8,8,0,0,0,16,0V179.31l14.63,14.63A95.43,95.43,0,0,0,130,222.06h.53a95.36,95.36,0,0,0,67.07-27.33,8,8,0,0,0-11.18-11.44Z"/>`,
+  "caret-down": `<path d="M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80A8,8,0,0,1,53.66,90.34L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z"/>`,
+  "plus": `<path d="M224,128a8,8,0,0,1-8,8H136v80a8,8,0,0,1-16,0V136H40a8,8,0,0,1,0-16h80V40a8,8,0,0,1,16,0v80h80A8,8,0,0,1,224,128Z"/>`,
+  "external": `<path d="M224,104a8,8,0,0,1-16,0V59.32l-66.33,66.34a8,8,0,0,1-11.32-11.32L196.68,48H152a8,8,0,0,1,0-16h64a8,8,0,0,1,8,8Zm-40,24a8,8,0,0,0-8,8v72H48V80h72a8,8,0,0,0,0-16H48A16,16,0,0,0,32,80V208a16,16,0,0,0,16,16H176a16,16,0,0,0,16-16V136A8,8,0,0,0,184,128Z"/>`,
+  "search": `<path d="M229.66,218.34l-50.07-50.06a88.11,88.11,0,1,0-11.31,11.31l50.06,50.07a8,8,0,0,0,11.32-11.32ZM40,112a72,72,0,1,1,72,72A72.08,72.08,0,0,1,40,112Z"/>`,
+  "archive": `<path d="M224,48H32A16,16,0,0,0,16,64V88a16,16,0,0,0,16,16v88a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V104a16,16,0,0,0,16-16V64A16,16,0,0,0,224,48ZM208,192H48V104H208ZM224,88H32V64H224V88ZM96,136a8,8,0,0,1,8-8h48a8,8,0,0,1,0,16H104A8,8,0,0,1,96,136Z"/>`,
+  "folder": `<path d="M216,72H131.31L104,44.69A15.86,15.86,0,0,0,92.69,40H40A16,16,0,0,0,24,56V200.62A15.4,15.4,0,0,0,39.38,216H216.89A15.13,15.13,0,0,0,232,200.89V88A16,16,0,0,0,216,72ZM40,56H92.69l16,16H40ZM216,200H40V88H216Z"/>`,
+  "check": `<path d="M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z"/>`,
+  "caret-up-down": `<path d="M181.66,170.34a8,8,0,0,1,0,11.32l-48,48a8,8,0,0,1-11.32,0l-48-48a8,8,0,0,1,11.32-11.32L128,212.69l42.34-42.35A8,8,0,0,1,181.66,170.34Zm-96-84.68L128,43.31l42.34,42.35a8,8,0,0,0,11.32-11.32l-48-48a8,8,0,0,0-11.32,0l-48,48A8,8,0,0,0,85.66,85.66Z"/>`,
+  "lighthouse": `<path d="M208,80a8,8,0,0,0-8,8v16H188.85L184,55.2A8,8,0,0,0,181.32,50L138.44,11.88l-.2-.17a16,16,0,0,0-20.48,0l-.2.17L74.68,50A8,8,0,0,0,72,55.2L67.15,104H56V88a8,8,0,0,0-16,0v24a8,8,0,0,0,8,8H65.54l-9.47,94.48A16,16,0,0,0,72,232H184a16,16,0,0,0,15.92-17.56L190.46,120H208a8,8,0,0,0,8-8V88A8,8,0,0,0,208,80ZM128,24l27,24H101ZM87.24,64h81.52l4,40H136V88a8,8,0,0,0-16,0v16H83.23ZM72,216l4-40H180l4,40Zm106.39-56H77.61l4-40h92.76Z"/>`,
+  "fetch": `<path d="M248,128a87.34,87.34,0,0,1-17.6,52.81,8,8,0,1,1-12.8-9.62A71.34,71.34,0,0,0,232,128a72,72,0,0,0-144,0,8,8,0,0,1-16,0,88,88,0,0,1,3.29-23.88C74.2,104,73.1,104,72,104a48,48,0,0,0,0,96H96a8,8,0,0,1,0,16H72A64,64,0,1,1,81.29,88.68,88,88,0,0,1,248,128Zm-69.66,42.34L160,188.69V128a8,8,0,0,0-16,0v60.69l-18.34-18.35a8,8,0,0,0-11.32,11.32l32,32a8,8,0,0,0,11.32,0l32-32a8,8,0,0,0-11.32-11.32Z"/>`,
+  "pull": `<path d="M205.66,149.66l-72,72a8,8,0,0,1-11.32,0l-72-72a8,8,0,0,1,11.32-11.32L120,196.69V40a8,8,0,0,1,16,0V196.69l58.34-58.35a8,8,0,0,1,11.32,11.32Z"/>`,
+};
+function icon(name, cls = "") { return `<svg class="ico ${cls}" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true">${ICONS[name] || ""}</svg>`; }
+function busy(btn, on, label) { if (!btn) return; if (on) { btn._label = btn.innerHTML; btn.innerHTML = `<span class="spinner"></span> ${label || ""}`.trim(); btn.disabled = true; } else { btn.innerHTML = btn._label ?? btn.innerHTML; btn.disabled = false; } }
+async function call(fn, ...args) { const res = await fn(...args); if (!res.ok) { toast(res.error); throw new Error(res.error); } return res.data; }
+function ago(iso) { if (!iso) return ""; const d = (Date.now() - new Date(iso).getTime()) / 1000; if (d < 60) return "just now"; if (d < 3600) return `${Math.floor(d / 60)}m ago`; if (d < 86400) return `${Math.floor(d / 3600)}h ago`; if (d < 2592000) return `${Math.floor(d / 86400)}d ago`; return new Date(iso).toLocaleDateString(); }
+function renderMarkdown(md) {
+  const lines = esc(md || "").split("\n"); let html = "", inList = false;
+  const cl = () => { if (inList) { html += "</ul>"; inList = false; } };
+  const il = (s) => s.replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/_([^_]+)_/g, "<em>$1</em>");
+  for (const raw of lines) { const line = raw.trimEnd();
+    if (/^#{1,3}\s+/.test(line)) { cl(); html += `<h2>${il(line.replace(/^#{1,3}\s+/, ""))}</h2>`; }
+    else if (/^---\s*$/.test(line)) { cl(); html += "<hr />"; }
+    else if (/^\s*[-*]\s+/.test(line)) { if (!inList) { html += "<ul>"; inList = true; } const ind = line.match(/^\s*/)[0].length; html += `<li${ind >= 2 ? ' style="margin-left:14px"' : ""}>${il(line.replace(/^\s*[-*]\s+/, ""))}</li>`; }
+    else if (/<details>|<\/details>|<summary>/.test(line)) { cl(); html += line; }
+    else if (line === "") { cl(); }
+    else { cl(); html += `<p>${il(line)}</p>`; } }
+  cl(); return html;
+}
+const fileLi = (f) => `<li><span class="dot ${f.sensitive ? "red" : "green"}"></span><span class="file-name">${esc(f.file)}</span><span class="file-status">${esc(f.status)}${f.sensitive ? " · outside zone" : ""}</span></li>`;
+
+// Inline name/rename dialog (Electron blocks window.prompt). Resolves to the
+// trimmed value, or null if cancelled.
+function promptName({ title, initial = "", ok = "Save" }) {
+  return new Promise((resolve) => {
+    const overlay = $("modal"), input = $("modal-input");
+    $("modal-title").textContent = title; $("modal-ok").textContent = ok;
+    input.value = initial; overlay.classList.remove("hidden"); input.focus(); input.select();
+    const finish = (v) => { overlay.classList.add("hidden"); cleanup(); resolve(v); };
+    const onOk = () => { const v = input.value.trim(); if (!v) { input.focus(); return; } finish(v); };
+    const onCancel = () => finish(null);
+    const onKey = (e) => { if (e.key === "Enter") onOk(); else if (e.key === "Escape") onCancel(); };
+    const onOverlay = (e) => { if (e.target === overlay) onCancel(); };
+    function cleanup() { $("modal-ok").removeEventListener("click", onOk); $("modal-cancel").removeEventListener("click", onCancel); input.removeEventListener("keydown", onKey); overlay.removeEventListener("mousedown", onOverlay); }
+    $("modal-ok").addEventListener("click", onOk); $("modal-cancel").addEventListener("click", onCancel);
+    input.addEventListener("keydown", onKey); overlay.addEventListener("mousedown", onOverlay);
+  });
+}
+// Stash with a required name. Returns true if it happened.
+async function doStash() {
+  const name = await promptName({ title: "Name this stash", ok: "Stash", initial: "" });
+  if (name == null) return false;
+  await call(window.graft.stash, state.cwd, name);
+  toast(`Stashed: ${name}`);
+  return true;
+}
+// Turn a branch slug into a readable title: "stefan/update-hero" → "Update hero".
+function prettyBranch(name) {
+  return (name.split("/").pop() || name).replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// --- top nav (repo → branch, two linked dropdowns) --------------------------
+function renderTopnav() {
+  const c = state.ctx;
+  const has = !!(c && c.isRepo);
+  $("repo-name").textContent = has ? (c.ownerRepo || c.cwd.split("/").pop()) : "Open a repository…";
+  const branchBtn = $("branch-btn");
+  branchBtn.classList.toggle("hidden", !has);
+  $("fetch-btn").disabled = !has;
+  $("pull-btn").disabled = !has;
+  if (has) {
+    const onDefault = c.branch === c.defaultBranch;
+    $("branch-name").textContent = onDefault ? "Working tree" : c.branch;
+  }
+}
+
+// --- GitHub connection (onboarding) -----------------------------------------
+async function loadGh() { try { state.gh = await call(window.graft.ghStatus); } catch {} }
+function renderGhChip() {
+  const el = $("gh-status"); if (!el) return;
+  const g = state.gh || {};
+  if (!g.installed) {
+    el.className = "gh-chip warn";
+    el.innerHTML = `${icon("x-circle")}<span>GitHub CLI not found</span>`;
+    el.title = "Install the GitHub CLI (gh) to open pull requests";
+    el.onclick = () => window.graft.openExternal("https://cli.github.com");
+  } else if (!g.authed) {
+    el.className = "gh-chip action";
+    el.innerHTML = `${icon("pull-request")}<span>Connect GitHub</span>`;
+    el.title = "Sign in to GitHub to open pull requests";
+    el.onclick = connectGh;
+  } else {
+    el.className = "gh-chip ok";
+    el.innerHTML = `${icon("check")}<span>${esc(g.login ? "@" + g.login : "GitHub")}</span>${icon("caret-up-down", "gh-caret")}`;
+    el.title = `Connected to GitHub${g.login ? " as @" + g.login : ""}`;
+    el.onclick = ghMenu;
+  }
+}
+// Account menu on the connected chip — switch, add, or re-check.
+function ghMenu() {
+  const g = state.gh || {};
+  openMenu($("gh-status"), [
+    { header: true, label: g.login ? `Connected as @${g.login}` : "Connected to GitHub" },
+    { icon: "caret-up-down", label: "Switch account", onClick: switchGhAccount },
+    { icon: "pull-request", label: "Add another account", onClick: connectGh },
+    { separator: true },
+    { icon: "refresh", label: "Re-check", onClick: recheckGh },
+  ]);
+}
+// `gh auth switch` in Terminal, then poll until the active login changes.
+async function switchGhAccount() {
+  const prev = state.gh && state.gh.login;
+  try { await call(window.graft.ghAuthSwitch); } catch { return; }
+  toast("Pick an account in the Terminal window — it'll update here.");
+  const el = $("gh-status");
+  if (el) { el.className = "gh-chip action"; el.innerHTML = `<span class="spinner"></span><span>Switching…</span>`; el.onclick = () => recheckGh(); }
+  clearInterval(ghPoll);
+  let tries = 0;
+  ghPoll = setInterval(async () => {
+    tries++;
+    await loadGh();
+    if (state.gh.login && state.gh.login !== prev) { clearInterval(ghPoll); ghPoll = null; onGhConnected(); }
+    else if (tries >= 40) { clearInterval(ghPoll); ghPoll = null; renderGhChip(); }
+  }, 3000);
+}
+// Launch `gh auth login` in Terminal, then poll until the user finishes.
+async function connectGh() {
+  if (state.gh && !state.gh.installed) { window.graft.openExternal("https://cli.github.com"); return; }
+  try { await call(window.graft.ghAuthLogin); } catch { return; }
+  toast("Complete GitHub sign-in in the Terminal window that opened.");
+  const el = $("gh-status");
+  if (el) { el.className = "gh-chip action"; el.innerHTML = `<span class="spinner"></span><span>Waiting for sign-in…</span>`; el.onclick = () => recheckGh(); }
+  clearInterval(ghPoll);
+  let tries = 0;
+  ghPoll = setInterval(async () => {
+    tries++;
+    await loadGh();
+    if (state.gh.authed) { clearInterval(ghPoll); ghPoll = null; onGhConnected(); }
+    else if (tries >= 40) { clearInterval(ghPoll); ghPoll = null; renderGhChip(); } // give up after ~2 min
+  }, 3000);
+}
+async function recheckGh() { clearInterval(ghPoll); ghPoll = null; await loadGh(); if (state.gh.authed) onGhConnected(); else renderGhChip(); }
+async function onGhConnected() {
+  renderGhChip();
+  toast(`Connected to GitHub${state.gh.login ? ` as @${state.gh.login}` : ""}`);
+  if (state.cwd) { await loadPRs().catch(() => {}); renderList(); }
+  // Advance the onboarding funnel (Connect GitHub → Select repository) if we're
+  // sitting on the default pane.
+  if (state.selected === null) showEmpty();
+}
+
+// --- popover menu (used by the nav dropdowns) -------------------------------
+function closeMenu() {
+  if (!closeMenu._el) return;
+  closeMenu._el.remove(); closeMenu._el = null; closeMenu._anchor = null;
+  document.removeEventListener("mousedown", closeMenu._down, true);
+  document.removeEventListener("keydown", closeMenu._key, true);
+}
+closeMenu._down = (e) => { const a = closeMenu._anchor; if (closeMenu._el && !closeMenu._el.contains(e.target) && a && !a.contains(e.target)) closeMenu(); };
+closeMenu._key = (e) => { if (e.key === "Escape") closeMenu(); };
+function openMenu(anchor, items) {
+  if (closeMenu._anchor === anchor) { closeMenu(); return; } // toggle off
+  closeMenu();
+  const menu = document.createElement("div");
+  menu.className = "menu";
+  menu.innerHTML = items.map((it, i) => {
+    if (it.separator) return `<div class="menu-sep"></div>`;
+    if (it.header) return `<div class="menu-header">${esc(it.label)}</div>`;
+    return `<button class="menu-item ${it.checked ? "checked" : ""}" data-i="${i}">
+      <span class="menu-ico">${it.icon ? icon(it.icon) : ""}</span>
+      <span class="menu-label">${esc(it.label)}</span>
+      ${it.checked ? icon("check", "menu-check") : ""}</button>`;
+  }).join("");
+  document.body.appendChild(menu);
+  const r = anchor.getBoundingClientRect();
+  menu.style.top = `${Math.round(r.bottom + 5)}px`;
+  menu.style.minWidth = `${Math.round(Math.max(200, r.width))}px`;
+  // Keep the menu inside the viewport (anchors near the right edge would overflow).
+  const mw = menu.offsetWidth || 200;
+  let left = r.left;
+  if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
+  menu.style.left = `${Math.round(Math.max(8, left))}px`;
+  menu.querySelectorAll(".menu-item").forEach((b) => b.addEventListener("click", () => {
+    const it = items[Number(b.dataset.i)]; closeMenu(); it.onClick && it.onClick();
+  }));
+  closeMenu._el = menu; closeMenu._anchor = anchor;
+  setTimeout(() => { document.addEventListener("mousedown", closeMenu._down, true); document.addEventListener("keydown", closeMenu._key, true); }, 0);
+}
+// The repo button opens the OS folder picker directly (no menu — there was only
+// ever one option).
+async function openRepo() { const dir = await call(window.graft.pickFolder); if (dir) await loadContext(dir); }
+function branchMenu() {
+  if (!(state.ctx && state.ctx.isRepo)) return;
+  const def = state.ctx.defaultBranch, cur = state.ctx.branch;
+  const items = state.branches.map((b) => ({
+    icon: "branch",
+    label: b.isDefault ? `Working tree (${b.name})` : b.name,
+    checked: b.name === cur,
+    onClick: () => switchBranch(b.name),
+  }));
+  items.push({ separator: true });
+  items.push({ icon: "plus", label: "New branch…", onClick: startNewChange });
+  openMenu($("branch-btn"), items);
+}
+
+// --- activity list ----------------------------------------------------------
+function rowHTML({ cls, type, id, iconName, col, title, sub, tag }) {
+  const s = state.selected;
+  const sel = s && s.type === type && (id === undefined || s.index === id || s.number === id || s.branch === id) ? "active" : "";
+  return `<li class="row-item ${cls} ${sel}" data-type="${type}" ${id !== undefined ? `data-id="${esc(String(id))}"` : ""}>
+    <span class="row-ico" ${col ? `style="color:${col}"` : ""}>${icon(iconName)}</span>
+    <span class="row-main"><span class="row-title">${esc(title)}${tag ? `<span class="row-tag">${esc(tag)}</span>` : ""}</span><span class="row-sub">${esc(sub)}</span></span></li>`;
+}
+function prRow(p) {
+  const s = p.state;
+  return rowHTML({
+    cls: "pr", type: "pr", id: p.number,
+    iconName: s === "MERGED" ? "merge" : s === "CLOSED" ? "x-circle" : p.isDraft ? "circle-dashed" : "pull-request",
+    col: s === "MERGED" ? "var(--purple)" : s === "CLOSED" ? "var(--red)" : p.isDraft ? "var(--mute)" : "var(--green)",
+    title: p.title,
+    sub: `#${p.number} · ${p.headRefName}${p.isDraft ? " · draft" : ""} · ${ago(p.updatedAt)}`,
+  });
+}
+// A collapsible Linear-style group: a full-width band (a "break" in the list),
+// a status dot, a name and a count, then its rows.
+function section(key, label, count, color, bodyHTML) {
+  const collapsed = state.collapsed.has(key);
+  const head = `<li class="group-head ${collapsed ? "collapsed" : ""}" data-group="${key}">${icon("caret-down", "group-chev")}<span class="group-dot" style="background:${color}"></span><span class="group-name">${label}</span><span class="group-count">${count}</span></li>`;
+  return head + (collapsed ? "" : bodyHTML);
+}
+// The unified activity list: a branch and its eventual PR are the SAME piece of
+// work moving through statuses. In progress (unshipped branches) → In review
+// (open PRs) → Done (merged) / Cancelled (closed). Stashes tuck into "Set aside".
+function renderList() {
+  const ul = $("rows");
+  if (!state.ctx || !state.ctx.isRepo) { ul.innerHTML = `<li class="list-empty">Open a repository to see its activity.</li>`; return; }
+  const prs = state.prsAvailable ? state.prs : [];
+  const open = prs.filter((p) => p.state === "OPEN");
+  const merged = prs.filter((p) => p.state === "MERGED");
+  const closed = prs.filter((p) => p.state === "CLOSED");
+  // A branch is "shipped" once it has an open or merged PR — then it shows up as
+  // that PR, not as a separate in-progress branch.
+  const shipped = new Set(prs.filter((p) => p.state !== "CLOSED").map((p) => p.headRefName));
+  const inProgress = state.branches.filter((b) => !b.isDefault && !shipped.has(b.name));
+
+  let html = "";
+  // Pinned Working tree row — uncommitted changes are always reachable here (to
+  // commit or set aside), whatever branch or PR state you're in.
+  if (isDirty()) {
+    html += rowHTML({ cls: "working", type: "working", iconName: "pencil", col: "var(--amber)",
+      title: "Working tree", sub: `${state.working.length} uncommitted change${state.working.length > 1 ? "s" : ""} · on ${state.ctx.branch}` });
+  }
+  html += section("inprogress", "In progress", inProgress.length, "var(--blue)",
+    inProgress.length
+      ? inProgress.map((b) => rowHTML({ cls: "branch", type: "branch", id: b.name, iconName: "branch", col: "var(--blue)",
+          title: prettyBranch(b.name), sub: `${b.name}${b.date ? ` · ${ago(b.date)}` : ""}`, tag: b.current ? "current" : "" })).join("")
+      : `<li class="list-empty sub">Nothing in progress — start a new branch.</li>`);
+  if (!state.prsAvailable) {
+    html += state.gh && state.gh.authed
+      ? `<li class="list-empty sub">No GitHub remote found for this repo.</li>`
+      : `<li class="list-empty sub"><button class="linklike" data-connect>Connect GitHub</button> to track pull requests.</li>`;
+  } else {
+    html += section("inreview", "In review", open.length, "var(--green)",
+      open.length ? open.map(prRow).join("") : `<li class="list-empty sub">Nothing in review.</li>`);
+    html += section("done", "Done", merged.length, "var(--purple)",
+      merged.length ? merged.map(prRow).join("") : `<li class="list-empty sub">Nothing merged yet.</li>`);
+    if (closed.length) html += section("cancelled", "Cancelled", closed.length, "var(--red)", closed.map(prRow).join(""));
+  }
+  if (state.stashes.length) {
+    html += section("setaside", "Set aside", state.stashes.length, "var(--mute)",
+      state.stashes.map((s) => rowHTML({ cls: "stash", type: "stash", id: s.index, iconName: "archive", col: "var(--mute)",
+        title: s.label, sub: `stash@{${s.index}}` })).join(""));
+  }
+  ul.innerHTML = html;
+  ul.querySelectorAll(".group-head").forEach((h) => h.addEventListener("click", () => {
+    const k = h.dataset.group;
+    if (state.collapsed.has(k)) state.collapsed.delete(k); else state.collapsed.add(k);
+    renderList();
+  }));
+  ul.querySelectorAll(".row-item").forEach((li) => li.addEventListener("click", () => {
+    const t = li.dataset.type, id = li.dataset.id;
+    if (t === "working") selectWorking();
+    else if (t === "pr") selectPR(Number(id));
+    else if (t === "stash") selectStash(Number(id));
+    else if (t === "branch") switchBranch(id);
+  }));
+  const connect = ul.querySelector("[data-connect]");
+  if (connect) connect.addEventListener("click", connectGh);
+}
+// Switch to a branch and land in the right place: the default branch is the
+// "working tree" (home / empty state); a feature branch opens its activity view.
+// Guarded against a dirty tree by the engine.
+async function switchBranch(name) {
+  if (!name) return;
+  const land = () => (name === state.ctx.defaultBranch ? goHome() : selectBranch(name));
+  if (state.ctx && state.ctx.branch === name) { land(); return; }
+  try {
+    await call(window.graft.checkout, state.cwd, name);
+    toast(`Switched to ${name}`);
+    await reloadRepoState();
+    land();
+  } catch {}
+}
+
+// --- detail pane ------------------------------------------------------------
+function showDetail(html, flush = false) {
+  $("empty-state").classList.add("hidden");
+  $("detail-col").classList.toggle("flush", flush);
+  const d = $("detail-view"); d.classList.remove("hidden"); d.innerHTML = html; return d;
+}
+// A three-step onboarding progress bar (Connect GitHub → Select repo → New branch).
+function onboardProgress(active) {
+  const steps = ["Connect GitHub", "Select repository", "New branch"];
+  return `<div class="onboard-steps">${steps.map((s, i) =>
+    `<span class="ob-step ${i < active ? "done" : i === active ? "active" : ""}">${i < active ? icon("check", "ob-check") : ""}${esc(s)}</span>`
+  ).join('<span class="ob-sep">›</span>')}</div>`;
+}
+// The default right pane, which doubles as the first-run funnel:
+//   1. Connect GitHub (before we ever show "select a repo")
+//   2. Select a repository
+//   3. Pull latest (only if the branch is behind) → then Create a branch
+function showEmpty() {
+  $("detail-view").classList.add("hidden");
+  $("detail-col").classList.remove("flush");
+  const es = $("empty-state"); es.classList.remove("hidden");
+  const g = state.gh || {};
+  const repo = !!(state.ctx && state.ctx.isRepo);
+
+  // Gate the pre-repo state on a connected GitHub account.
+  if (!repo) {
+    if (!g.authed) return renderConnectStep(es, g);
+    return renderSelectRepoStep(es);
+  }
+  // Repo open: make sure they're up to date before prompting a branch.
+  if (!state.skipSync && state.sync && state.sync.behind > 0 && !isDirty()) return renderUpdateStep(es);
+  return renderCreateStep(es);
+}
+function renderConnectStep(es, g) {
+  const inst = !!g.installed;
+  es.innerHTML = `
+    <div class="empty-illus">${icon("pull-request")}</div>
+    <h2>${inst ? "Connect your GitHub account" : "Install the GitHub CLI"}</h2>
+    <p class="empty-msg">${inst
+      ? "Sign in once so Devsign can open pull requests for you. Devsign stores nothing — your GitHub CLI handles the sign-in."
+      : "Devsign uses the GitHub CLI (gh) to open pull requests. Install it from cli.github.com, then connect."}</p>
+    <button class="btn signal" id="ob-gh">${inst ? "Connect GitHub" : "Get the GitHub CLI"}</button>
+    ${onboardProgress(0)}`;
+  es.querySelector("#ob-gh").addEventListener("click", () => inst ? connectGh() : window.graft.openExternal("https://cli.github.com"));
+}
+function renderSelectRepoStep(es) {
+  es.innerHTML = `
+    <div class="empty-illus">${icon("folder")}</div>
+    <h2>Select a repository</h2>
+    <p class="empty-msg">Choose a folder on your machine to start working.</p>
+    <button class="btn primary" id="ob-repo">${icon("folder")} Select a repository</button>
+    ${onboardProgress(1)}`;
+  es.querySelector("#ob-repo").addEventListener("click", openRepo);
+}
+function renderUpdateStep(es) {
+  const s = state.sync;
+  es.innerHTML = `
+    <div class="empty-illus">${icon("pull")}</div>
+    <h2>Get up to date first</h2>
+    <p class="empty-msg">${esc(state.ctx.branch)} is ${s.behind} commit${s.behind > 1 ? "s" : ""} behind ${esc(s.upstream || "origin")}. Pull the latest before starting a new branch.</p>
+    <div class="create-row" style="justify-content:center">
+      <button class="btn signal" id="ob-pull">Pull latest changes</button>
+      <button class="btn" id="ob-skip">Skip</button>
+    </div>`;
+  es.querySelector("#ob-pull").addEventListener("click", async () => {
+    const b = es.querySelector("#ob-pull"); busy(b, true, "Pulling");
+    try { await call(window.graft.pull, state.cwd); toast("Pulled the latest changes"); await reloadRepoState(); showEmpty(); }
+    catch { busy(b, false); }
+  });
+  es.querySelector("#ob-skip").addEventListener("click", () => { state.skipSync = true; showEmpty(); });
+}
+function renderCreateStep(es) {
+  const dirty = isDirty();
+  es.innerHTML = `
+    <div class="empty-illus">${icon("branch")}</div>
+    <h2>Start a new branch</h2>
+    <p class="empty-msg">Describe what you're changing — Devsign branches off the latest ${esc(state.ctx.defaultBranch)} so you get a safe copy to work in.</p>
+    <div class="create-row">
+      <input id="create-name" class="input" type="text" placeholder="e.g. update the pricing page" autocomplete="off" ${dirty ? "disabled" : ""} />
+      <button class="btn signal" id="create-start" ${dirty ? "disabled" : ""}>Create branch</button>
+    </div>
+    ${dirty
+      ? `<p class="create-hint">You have ${state.working.length} uncommitted change${state.working.length > 1 ? "s" : ""}. <button class="linklike" id="create-goto-wt">Save or set them aside</button> first.</p>`
+      : `<p class="empty-msg small">…or pick an item on the left to open it.</p>`}
+    ${onboardProgress(2)}`;
+  const nameEl = es.querySelector("#create-name");
+  if (nameEl) {
+    const go = () => startBranch(nameEl.value);
+    es.querySelector("#create-start").addEventListener("click", go);
+    nameEl.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+    nameEl.focus();
+  }
+  const goWt = es.querySelector("#create-goto-wt");
+  if (goWt) goWt.addEventListener("click", selectWorking);
+}
+// Create the branch from the inline form, then open its activity view.
+async function startBranch(name) {
+  if (!name || !name.trim()) return;
+  if (!(state.ctx && state.ctx.isRepo)) return;
+  if (isDirty()) { toast("Save or set aside your current changes first"); selectWorking(); return; }
+  try {
+    const r = await call(window.graft.start, state.cwd, name.trim());
+    toast(`Started ${r.branch}`);
+    await reloadRepoState();
+    selectBranch(r.branch);
+  } catch {}
+}
+function goHome() { state.selected = null; renderList(); renderTopnav(); showEmpty(); }
+
+// "Open in <agent>" buttons for making edits, if a supported agent is installed.
+function agentButtonsHTML() {
+  const a = state.agents; let html = "";
+  if (a.cursor) html += `<button class="btn small" data-agent="cursor">Open in Cursor</button>`;
+  if (a.claude) html += `<button class="btn small" data-agent="claude">Open in Claude Code</button>`;
+  return html;
+}
+function bindAgents(root) {
+  root.querySelectorAll("button[data-agent]").forEach((b) => b.addEventListener("click", async () => {
+    try { await call(window.graft.openIn, b.dataset.agent, state.cwd); toast(`Opening in ${b.dataset.agent}…`); } catch {}
+  }));
+}
+
+// The branch activity view — the main working surface. Shows what's happened on
+// this branch (saves + change counts), with a sticky action bar: save / stash /
+// restore on the left, Create PR on the right.
+async function selectBranch(name, sel) {
+  const token = sel || { type: "branch", branch: name };
+  state.selected = token;
+  renderList(); renderTopnav();
+  showDetail(`<div class="branch-view"><div class="branch-scroll"><div class="muted"><span class="spinner"></span> Loading…</div></div></div>`, true);
+  let log = { commits: [] }, st = null;
+  await loadWorking().catch(() => {});
+  try { log = await call(window.graft.branchLog, state.cwd); } catch {}
+  try { st = await call(window.graft.status, state.cwd); } catch {}
+  if (state.selected !== token) return; // user navigated away while loading
+  renderBranchView(name, log, st);
+}
+// The Working tree row → the current branch's activity view (commit / stash /
+// restore live in its action bar), with the Working tree row kept highlighted.
+function selectWorking() { if (state.ctx && state.ctx.isRepo) selectBranch(state.ctx.branch, { type: "working" }); }
+function renderBranchView(name, log, st) {
+  const commits = log.commits || [];
+  const dirty = isDirty();
+  const changed = st ? st.files.length : state.working.length;
+  const restricted = state.working.filter((f) => f.sensitive).length;
+  const diffStat = st && st.stat ? st.stat.replace(/^\s*\d+ files? changed,?\s*/, "") : "";
+  const agents = agentButtonsHTML();
+
+  const unsaved = dirty ? `
+    <div class="detail-section-h">Unsaved changes (${state.working.length})</div>
+    ${restricted ? `<div class="zone-warn">${icon("lighthouse", "zone-ico")}<span>${restricted} file(s) are outside the editable zone — a developer should handle those.</span></div>` : ""}
+    <ul class="files">${state.working.map(fileLi).join("")}</ul>` : "";
+
+  const saves = commits.length
+    ? `<div class="graph">${commits.map((c) => `<div class="commit"><div class="commit-msg">${esc(c.message)}</div><div class="commit-meta">${esc(c.oid)} · ${esc(ago(c.date))} · ${c.files} file${c.files !== 1 ? "s" : ""} · <span class="add">+${c.additions}</span> <span class="del">−${c.deletions}</span></div></div>`).join("")}</div>`
+    : `<div class="muted">No saves yet. Make your edits, then Save to record the first one.</div>`;
+
+  const onDefault = !!(state.ctx && name === state.ctx.defaultBranch);
+  const canPR = !onDefault && (commits.length > 0 || dirty);
+  const view = showDetail(`
+    <div class="branch-view">
+      <div class="branch-scroll">
+        <h1 class="detail-title">${esc(prettyBranch(name))}</h1>
+        <div class="detail-meta">
+          <span class="badge dim">${esc(name)}</span>
+          <span>${commits.length} save${commits.length !== 1 ? "s" : ""}</span>
+          <span>·</span><span>${changed} file${changed !== 1 ? "s" : ""} changed</span>
+          ${diffStat ? `<span>·</span><span>${esc(diffStat)}</span>` : ""}
+        </div>
+        ${agents ? `<div class="agents-row">${agents}</div>` : ""}
+        ${unsaved}
+        <div class="detail-section-h">Saves</div>
+        ${saves}
+      </div>
+      <div class="action-bar">
+        <div class="ab-left">
+          <input id="ab-msg" class="input ab-msg" type="text" placeholder="Describe what you changed…" autocomplete="off" ${dirty ? "" : "disabled"} />
+          <button class="btn primary small" id="ab-save" ${dirty ? "" : "disabled"}>Save</button>
+          <button class="btn small" id="ab-stash" ${dirty ? "" : "disabled"}>Stash</button>
+          <button class="btn small" id="ab-restore" ${state.stashes.length ? "" : "disabled"}>Restore stash</button>
+        </div>
+        <div class="ab-right">
+          <button class="btn signal" id="ab-createpr" ${canPR ? "" : "disabled"}>${icon("pull-request")} Create PR</button>
+        </div>
+      </div>
+    </div>`, true);
+
+  bindAgents(view);
+  const reRender = async () => { await reloadRepoState(); selectBranch(name); };
+  view.querySelector("#ab-save").addEventListener("click", async () => {
+    const msg = view.querySelector("#ab-msg").value.trim();
+    const btn = view.querySelector("#ab-save"); busy(btn, true, "Saving");
+    try { await call(window.graft.commit, state.cwd, msg); toast("Saved"); await reRender(); } catch { busy(btn, false); }
+  });
+  view.querySelector("#ab-msg").addEventListener("keydown", (e) => { if (e.key === "Enter") view.querySelector("#ab-save").click(); });
+  view.querySelector("#ab-stash").addEventListener("click", async () => { try { if (await doStash()) await reRender(); } catch {} });
+  view.querySelector("#ab-restore").addEventListener("click", async () => { const b = view.querySelector("#ab-restore"); busy(b, true, ""); try { await call(window.graft.stashPop, state.cwd); toast("Stash restored"); await reRender(); } catch { busy(b, false); } });
+  view.querySelector("#ab-createpr").addEventListener("click", () => createPR());
+}
+
+// Create PR: gate on a connected GitHub, then preview the AI-generated PR and
+// open it for real on confirm.
+async function createPR() {
+  const modal = $("ship-modal"), preview = $("ship-preview"), confirm = $("ship-confirm"), cancel = $("ship-cancel");
+  modal.classList.remove("hidden");
+  confirm.classList.remove("hidden");
+
+  const close = () => { modal.classList.add("hidden"); cleanup(); };
+  let onConfirm;
+  const onCancel = () => close();
+  const onOverlay = (e) => { if (e.target === modal) close(); };
+  function cleanup() { cancel.removeEventListener("click", onCancel); confirm.removeEventListener("click", onConfirm); modal.removeEventListener("mousedown", onOverlay); }
+
+  if (!(state.gh && state.gh.authed)) {
+    // Not connected — turn the modal into a connect prompt.
+    const inst = !!(state.gh && state.gh.installed);
+    preview.innerHTML = `<div class="connect-panel">${icon("pull-request", "cp-ico")}<div><div class="cp-title">${inst ? "Connect GitHub to open a pull request" : "GitHub CLI not found"}</div><p class="muted">${inst ? "Sign in once and Devsign can push your branch and open the PR for you. Devsign stores nothing — your GitHub CLI handles the sign-in." : "Install the GitHub CLI (gh) from cli.github.com, then connect your account here."}</p></div></div>`;
+    confirm.textContent = inst ? "Connect GitHub" : "Get the GitHub CLI";
+    confirm.disabled = false;
+    onConfirm = () => { close(); connectGh(); };
+  } else {
+    preview.innerHTML = `<div class="muted"><span class="spinner"></span> Analyzing your changes…</div>`;
+    confirm.textContent = "Create pull request";
+    confirm.disabled = true;
+    let annotation = null;
+    try {
+      const r = await call(window.graft.ship, { cwd: state.cwd, dryRun: true });
+      annotation = r.annotation;
+      const blocked = !!(r.restricted && r.restricted.length);
+      const warn = blocked ? `<div class="zone-warn">${icon("lighthouse", "zone-ico")}<span>${r.restricted.length} file(s) are outside the editable zone. A developer needs to handle: ${r.restricted.map((f) => `<code>${esc(f)}</code>`).join(" ")}</span></div>` : "";
+      preview.innerHTML = `${warn}<div class="preview-head"><span class="badge dim">${esc(r.annotation.source)}</span><span class="preview-title">${esc(r.annotation.title)}</span></div><div class="preview-body">${renderMarkdown(r.annotation.body)}</div>`;
+      confirm.disabled = blocked;
+    } catch { preview.innerHTML = `<div class="muted">Couldn't analyze the changes on this branch.</div>`; }
+    onConfirm = async () => {
+      busy(confirm, true, "Creating");
+      try {
+        const r = await call(window.graft.ship, { cwd: state.cwd, dryRun: false, title: annotation && annotation.title });
+        toast(`Pull request created: ${r.prUrl}`);
+        close();
+        await reloadRepoState();
+        goHome();
+      } catch { busy(confirm, false); }
+    };
+  }
+  cancel.addEventListener("click", onCancel);
+  confirm.addEventListener("click", onConfirm);
+  modal.addEventListener("mousedown", onOverlay);
+}
+
+async function selectPR(number) {
+  state.selected = { type: "pr", number }; renderList(); renderTopnav();
+  showDetail(`<div class="muted">Loading #${number}…</div>`);
+  try {
+    const dd = await call(window.graft.prDetail, state.cwd, number, "");
+    const badge = dd.mergedAt ? '<span class="badge dim">merged</span>' : `<span class="badge green">open</span>`;
+    const commits = (dd.commits || []).map((c) => `<div class="commit"><div class="commit-msg">${esc(c.message)}</div><div class="commit-meta">${esc(c.oid)} · ${esc(c.author)} · ${esc(ago(c.date))}</div></div>`).join("");
+    const files = (dd.files || []).map((f) => `<li><span class="file-name">${esc(f.path)}</span> <span class="file-status"><span class="add">+${f.additions}</span> <span class="del">−${f.deletions}</span></span></li>`).join("");
+    const d = showDetail(`
+      <h1 class="detail-title">${esc(dd.title)}</h1>
+      <div class="detail-meta">${badge}<span>#${dd.number}</span><span>·</span><span>${esc(dd.headRefName)}</span><span>·</span><span>${esc(dd.author?.login || dd.author?.name || "")}</span></div>
+      <div class="detail-section-h">Description</div><div class="detail-body">${renderMarkdown(dd.body) || "<span class='muted'>No description.</span>"}</div>
+      <div class="detail-section-h">Saves (${(dd.commits || []).length})</div><div class="graph">${commits || "<span class='muted'>No commits.</span>"}</div>
+      <div class="detail-section-h">Files (${(dd.files || []).length})</div><ul class="files">${files || "<li class='muted'>none</li>"}</ul>
+      <div class="detail-actions"><button class="btn" data-ext="${esc(dd.url)}">${icon("external")} Open on GitHub</button></div>`);
+    d.querySelector("[data-ext]").addEventListener("click", (e) => window.graft.openExternal(e.currentTarget.dataset.ext));
+  } catch {}
+}
+async function selectStash(index) {
+  state.selected = { type: "stash", index }; renderList(); renderTopnav();
+  try {
+    const dd = await call(window.graft.stashDetail, state.cwd, index);
+    const s = state.stashes.find((x) => x.index === index);
+    const d = showDetail(`
+      <h1 class="detail-title">${esc(s ? s.label : `stash@{${index}}`)}</h1>
+      <div class="detail-meta"><span class="badge dim">stash@{${index}}</span><span>set-aside changes</span></div>
+      <div class="detail-section-h">Files (${dd.files.length})</div>
+      <ul class="files">${dd.files.map((f) => `<li><span class="dot mute"></span><span class="file-name">${esc(f.file)}</span><span class="file-status">${esc(f.status)}</span></li>`).join("") || "<li class='muted'>none</li>"}</ul>
+      <div class="detail-actions"><button class="btn primary" id="stash-restore">Restore these changes</button><button class="btn" id="stash-rename">Rename</button></div>`);
+    d.querySelector("#stash-restore").addEventListener("click", async () => { try { await call(window.graft.stashPop, state.cwd, index); toast("Stash restored"); await reloadRepoState(); goHome(); } catch {} });
+    d.querySelector("#stash-rename").addEventListener("click", async () => {
+      const name = await promptName({ title: "Rename stash", ok: "Rename", initial: s ? s.label : "" });
+      if (name == null) return;
+      try { await call(window.graft.stashRename, state.cwd, index, name); toast("Stash renamed"); await reloadRepoState(); selectStash(0); } catch {}
+    });
+  } catch {}
+}
+
+// --- loaders ----------------------------------------------------------------
+async function loadPRs() { const r = await call(window.graft.listPRs, state.cwd, ""); state.prsAvailable = r.available; state.prs = r.prs || []; }
+async function loadStashes() { const list = await call(window.graft.stashList, state.cwd); state.stashes = list.map((l) => { const m = l.match(/^stash@\{(\d+)\}:\s*(.*)$/); return { index: m ? Number(m[1]) : 0, label: m ? m[2] : l }; }); }
+async function loadWorking() { const w = await call(window.graft.workingChanges, state.cwd); state.working = w.files || []; }
+async function loadBranches() { const r = await call(window.graft.listBranches, state.cwd); state.branches = r.branches || []; }
+async function loadSync(fetch = false) { try { state.sync = await call(window.graft.remoteState, state.cwd, fetch); } catch { state.sync = { behind: 0, ahead: 0, upstream: null }; } }
+
+// Reload everything derived from the repo (after any tree-changing action).
+// Recomputes ahead/behind from existing refs (no network fetch).
+async function reloadRepoState() {
+  state.ctx = await call(window.graft.context, state.cwd);
+  await Promise.all([loadWorking().catch(() => {}), loadStashes().catch(() => {}), loadPRs().catch(() => {}), loadBranches().catch(() => {}), loadSync(false).catch(() => {})]);
+  renderTopnav(); renderList();
+}
+
+// --- transitions ------------------------------------------------------------
+// "New branch" → clear the selection and surface the creation form (showEmpty
+// renders it and focuses the name field).
+function startNewChange() { if (state.ctx && state.ctx.isRepo) goHome(); }
+async function loadContext(cwd) {
+  state.cwd = cwd; state.selected = null; state.skipSync = false;
+  state.ctx = await call(window.graft.context, cwd);
+  // On open, fetch once so the "pull first" gate reflects the real remote.
+  await Promise.all([loadPRs().catch(() => {}), loadStashes().catch(() => {}), loadWorking().catch(() => {}), loadBranches().catch(() => {}), loadGh().catch(() => {}), loadSync(true).catch(() => {})]);
+  renderTopnav(); renderGhChip(); renderList(); showEmpty();
+}
+
+// --- wiring -----------------------------------------------------------------
+$("repo-btn").addEventListener("click", openRepo);
+$("branch-btn").addEventListener("click", branchMenu);
+// Reload repo state and re-open the current branch view (if one is showing).
+async function refreshView() {
+  await reloadRepoState();
+  const s = state.selected;
+  if (s && s.type === "branch") selectBranch(s.branch);
+}
+$("list-refresh").addEventListener("click", () => { if (state.cwd) refreshView(); });
+$("fetch-btn").addEventListener("click", async () => {
+  if (!state.cwd) return;
+  const b = $("fetch-btn"); busy(b, true, "Fetching");
+  try { await call(window.graft.fetchRemote, state.cwd); toast("Fetched the latest from GitHub"); await refreshView(); }
+  finally { busy(b, false); }
+});
+$("pull-btn").addEventListener("click", async () => {
+  if (!state.cwd) return;
+  const b = $("pull-btn"); busy(b, true, "Pulling");
+  try { const r = await call(window.graft.pull, state.cwd); toast(r.note && /already up to date/i.test(r.note) ? "Already up to date" : "Pulled the latest changes"); await refreshView(); }
+  finally { busy(b, false); }
+});
+
+// --- init -------------------------------------------------------------------
+(async () => { try { state.agents = await call(window.graft.detectAgents); } catch {} await loadGh().catch(() => {}); renderTopnav(); renderGhChip(); renderList(); showEmpty(); })();

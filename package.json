@@ -1,0 +1,56 @@
+{
+  "name": "devsign",
+  "version": "0.1.0",
+  "description": "A simplified git/GitHub workflow for designers, with an AI-generated annotation layer.",
+  "type": "module",
+  "main": "src/main/main.js",
+  "bin": {
+    "devsign": "bin/devsign.mjs"
+  },
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --mac",
+    "pack": "electron-builder --dir"
+  },
+  "author": "Stefan Rhoades",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/oneseventy170/Devsign.git"
+  },
+  "homepage": "https://github.com/oneseventy170/Devsign#readme",
+  "bugs": {
+    "url": "https://github.com/oneseventy170/Devsign/issues"
+  },
+  "devDependencies": {
+    "electron": "^43.1.1",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.devsign.app",
+    "productName": "Devsign",
+    "files": [
+      "src/**/*",
+      "bin/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "buildResources": "build",
+      "output": "dist"
+    },
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "icons/lighthouse-glass-1024.png",
+      "identity": null,
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    }
+  }
+}
